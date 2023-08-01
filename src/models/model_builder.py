@@ -1,101 +1,88 @@
-import os
-import re
-
-import emoji
-import numpy as np
-import pandas as pd
-from soynlp.normalizer import repeat_normalize
-
+from torch import arange
+from transformers import ElectraModel
 import torch
-from torch.utils.data import DataLoader, Dataset
+import torch.nn as nn
 
-import pytorch_lightning as pl
-from pytorch_lightning import loggers as pl_loggers
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+class Electra(nn.Module):
+    def __init__(self, dr_rate):
+        super(Electra, self).__init__()
+        self.model = ElectraModel.from_pretrained("monologg/koelectra-small-v3-discriminator")
+        self.dropout = nn.Dropout(dr_rate)
 
-import transformers
-from transformers import ElectraForSequenceClassification, ElectraTokenizer, AdamW
+    def forward(self, token_idx, attention_mask):
+
+        hidden_staes =  self.model(input_ids=token_idx, attention_mask=attention_mask.float().to(token_idx.device),
+                              return_dict=False)
+
+        # output = hidden_staes[:, 0, :] - for cls idx classifying
 
 
-class ElectraClassificationDataset(Dataset):
-    def __init__(self, path, sep, doc_col, label_col, max_length,
-                 num_workers=1, labels_dict=None):
-        self.tokenizer = ElectraTokenizer.from_pretrained("monologg/koelectra-small-v3-discriminator")
+        return self.dropout(hidden_staes[0][:, 0, :])
 
-        self.max_length = max_length
-        self.doc_col = doc_col
-        self.label_col = label_col
+        # return self.dropout(hidden_staes[1])
 
-        # labels
-        # None : label이 num으로 되어 있음
-        # dict : label이 num이 아닌 것으로 되어 있음
-        # ex : {True : 1, False : 0}
-        self.labels_dict = labels_dict
+class Linear(nn.Module):
+    def __init__(self, hidden_size=768):
+        super(Linear, self).__init__()
+        self.linear = nn.Linear(hidden_size, 1)
+        self.sigmoid = nn.Sigmoid()
 
-        # dataset
-        df = pd.read_csv(path, sep=sep)
-        # nan 제거
-        df = df.dropna(axis=0)
-        # 중복제거
-        df.drop_duplicates(subset=[self.doc_col], inplace=True)
-        self.dataset = df
+    def forward(self, x, mask_cls):
+        h = self.linear(x).squeeze(-1)
+        sent_scores = self.sigmoid(h) * mask_cls.float()
 
-    def __len__(self):
-        return len(self.dataset)
+        return sent_scores
 
-    def __getitem__(self, idx):
-        document = self.cleanse(self.dataset[self.doc_col].iloc[idx])
-        inputs = self.tokenizer(
-            document,
-            return_tensors='pt',
-            truncation=True,
-            max_length=self.max_length,
-            padding='max_length',
-            add_special_tokens=True
-        )
+class RNNClassifier(nn.Module):
+    def __init__(self, bidirectional=True, num_layers=1, input_size=256,
+                 hidden_size=256, dropout=0.1, num_class = 5):
+        super(RNNClassifier, self).__init__()
 
-        if self.labels_dict:
-            label = self.labels_dict[self.dataset[self.label_col].iloc[idx]]
+        self.num_directions = 2 if bidirectional else 1
+        assert hidden_size % self.num_directions == 0
+        self.hidden_size = hidden_size // self.num_directions
+
+        self.num_class = num_class
+
+        self.rnn = nn.LSTM(
+          input_size=input_size,
+          hidden_size=self.hidden_size,
+          num_layers=num_layers,
+          bidirectional=bidirectional
+          )
+
+        self.wo = nn.Linear(self.num_directions * self.hidden_size, num_class, bias=True)
+        self.dropout = nn.Dropout(dropout)
+
+        if(num_class ==1):
+            self.active_function = nn.Sigmoid()
         else:
-            label = self.dataset[self.label_col].iloc[idx]
 
-        return {
-            'input_ids': inputs['input_ids'][0],
-            'attention_mask': inputs['attention_mask'][0],
-            'label': int(label)
-        }
+            self.active_function = nn.Softmax(dim = 0)
+
+    def forward(self, x):
+        output, _ = self.rnn(x)
+        out_fow = output[range(len(output)),  :self.hidden_size]
+        out_rev = output[:, self.hidden_size:]
+        output = torch.cat((out_fow, out_rev), 1)
+        output = self.dropout(output)
+
+        out_cls = self.active_function(self.wo(torch.squeeze(output, 1)))
+
+        return out_cls
+
+class Classifier(nn.Module):
+    def __init__(self, argument_train):
+        super(Classifier, self).__init__()
+
+        self.electra = Electra(argument_train.drop_rate_bert)
+
+        self.classifier = RNNClassifier(bidirectional=True, num_layers=argument_train.num_layer,
+                                      input_size=argument_train.input_size, hidden_size=argument_train.hidden_size,
+                                      dropout=argument_train.drop_rate_encoder, num_class=argument_train.num_class)
+
+    def forward(self, token_idx, attn_mask):
+        output = self.electra(token_idx, attn_mask)
+        return self.classifier(output)
 
 
-class ElectraClassificationDataModule(pl.LightningDataModule):
-    def __init__(self, train_path, valid_path, max_length, batch_size, sep,
-                 doc_col, label_col, num_workers=1, labels_dict=None):
-        super().__init__()
-        self.batch_size = batch_size
-        self.train_path = train_path
-        self.valid_path = valid_path
-        self.max_length = max_length
-        self.doc_col = doc_col
-        self.label_col = label_col
-        self.sep = sep
-        self.num_workers = num_workers
-        self.labels_dict = labels_dict
-
-    def setup(self, stage=None):
-        self.set_train = ElectraClassificationDataset(self.train_path, sep=self.sep,
-                                                      doc_col=self.doc_col, label_col=self.label_col,
-                                                      max_length=self.max_length, labels_dict=self.labels_dict)
-        self.set_valid = ElectraClassificationDataset(self.valid_path, sep=self.sep,
-                                                      doc_col=self.doc_col, label_col=self.label_col,
-                                                      max_length=self.max_length, labels_dict=self.labels_dict)
-
-    def train_dataloader(self):
-        train = DataLoader(self.set_train, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
-        return train
-
-    def val_dataloader(self):
-        val = DataLoader(self.set_valid, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)
-        return val
-
-    def test_dataloader(self):
-        test = DataLoader(self.set_valid, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)
-        return test

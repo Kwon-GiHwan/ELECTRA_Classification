@@ -2,14 +2,15 @@ from transformers import ElectraTokenizer
 from torch.utils.data import Dataset
 
 class ElectraDataset(Dataset):
-    def __init__(self, sentence, label):
+    def __init__(self, sentence, label, arguments=None):
 
         self.tokenizer = ElectraTokenizer.from_pretrained("monologg/koelectra-small-v3-discriminator")
         self.sentence = sentence
         self.label = label
+        self.max_length = arguments.max_length
 
     def __getitem__(self, idx):
-        input, attention = self.tokenizer(
+        input = self.tokenizer(
             self.sentence[idx],
             return_tensors='pt',
             truncation=True,
@@ -18,12 +19,13 @@ class ElectraDataset(Dataset):
             add_special_tokens=True
         )
 
-        return (input, attention + (self.label[idx], ))
+
+        return (input['input_ids'][0], input['attention_mask'][0], self.label[idx])
 
     def __len__(self):
         return (len(self.sentence))
 
-class ElectraDataset_Validate(Dataset):
+class ValidDataset(Dataset):
     def __init__(self, sentence):
         self.tokenizer = ElectraTokenizer.from_pretrained("monologg/koelectra-small-v3-discriminator")
         self.sentence = sentence

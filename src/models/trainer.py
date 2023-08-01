@@ -1,144 +1,113 @@
-import os
-
 import torch
-import torchmetrics
-import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from transformers import AdamW
+from transformers.optimization import get_cosine_schedule_with_warmup as cosine_warmup
+from torch import nn
+from tqdm import tqdm
 
-import pytorch_lightning as pl
-from pytorch_lightning import loggers as pl_loggers
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import numpy as np
 
-import transformers
-from transformers import ElectraForSequenceClassification, ElectraTokenizer, AdamW
+import math
 
-device = torch.device("cuda")
+class Trainer(nn.Module):
+    def __init__(self, model, device, dset_train, dset_test, arg_train = None):
+        super(Trainer, self).__init__()
 
+        self.batch_size = arg_train.batch_size
+        self.warmup_rate = arg_train.warmup_rate
+        self.epoch = arg_train.epoch
+        self.grad_norm = arg_train.grad_norm
+        self.learn_rate = arg_train.learn_rate
 
-# https://medium.com/huggingface/multi-label-text-classification-using-bert-the-mighty-transformer-69714fa3fb3d
-# https://huggingface.co/docs/transformers/v4.15.0/en/model_doc/electra#transformers.ElectraForSequenceClassification
+        self.dset_train = dset_train
+        self.dset_test = dset_test
 
-class ElectraClassification(pl.LightningModule):
-    def __init__(self, learning_rate):
-        super().__init__()
-        self.learning_rate = learning_rate
-        self.save_hyperparameters()
+        self.device = device
+        self.model = model
 
-        self.electra = ElectraForSequenceClassification.from_pretrained("monologg/koelectra-small-v3-discriminator")
+        self.no_decay = ['bias', 'LayerNorm.weight']
+        self.optimizer_param = [
+            {'params': [p for n, p in self.model.named_parameters() if not any(nd in n for nd in self.no_decay)], 'weight_decay': 0.01},
+            {'params': [p for n, p in self.model.named_parameters() if any(nd in n for nd in self.no_decay)], 'weight_decay': 0.0}
+        ]
 
-        self.metric_acc = torchmetrics.Accuracy()
-        self.metric_f1 = torchmetrics.F1(num_classes=2)
-        self.metric_rec = torchmetrics.Recall(num_classes=2)
-        self.metric_pre = torchmetrics.Precision(num_classses=2)
+        self.optimizer = AdamW(self.optimizer_param, lr=self.learn_rate)
+        if(arg_train.num_class == 2):
+            self.loss_fn = nn.BCELoss()
+        else:
+            self.loss_fn = nn.CrossEntropyLoss()
 
-        self.loss_func = nn.CrossEntropyLoss()
+        self.train_len = len(self.dset_train) * self.epoch
+        self.warmup_step = int(self.train_len * self.warmup_rate)
 
-    def forward(self, input_ids, attention_mask, labels=None):
-        output = self.electra(input_ids=input_ids,
-                              attention_mask=attention_mask,
-                              labels=labels)
-        return output
+        self.scheduler = cosine_warmup(self.optimizer, num_warmup_steps=self.warmup_step, num_training_steps=self.train_len)
 
-    def training_step(self, batch, batch_idx):
-        '''
-        ##########################################################
-        electra forward input shape information
-        * input_ids.shape (batch_size, max_length)
-        * attention_mask.shape (batch_size, max_length)
-        * label.shape (batch_size,)
-        ##########################################################
-        '''
+    def calc_acc(self, X, Y):
+        max_vals, max_indices = torch.max(X, 1)
+        train_acc = (max_indices == Y).sum().data.cpu().numpy() / max_indices.size()[0]
+        return train_acc
 
-        # change label shape (list -> torch.Tensor((batch_size, 1)))
-        label = batch['label'].view([-1, 1])
+    def train_loop(self):
 
-        output = self(input_ids=batch['input_ids'].to(device),
-                      attention_mask=batch['attention_mask'].to(device),
-                      labels=label.to(device))
-        '''
-        ##########################################################
-        electra forward output shape information
-        * loss.shape (1,)
-        * logits.shape (batch_size, config.num_labels=2)
-        '''
-        logits = output.logits
+        self.model.train()
+        train_acc = 0.0
 
-        loss = output.loss
-        # loss = self.loss_func(logits.to(device), batch['label'].to(device))
+        for batch_id, (_input_idx, _attention_mask, _label) in enumerate(tqdm(self.dset_train)):
+            self.optimizer.zero_grad()
 
-        softmax = nn.functional.softmax(logits, dim=1)
-        preds = softmax.argmax(dim=1)
+            input_idx = _input_idx.to(self.device)
+            attention_mask = _attention_mask.to(self.device)
+            label = _label.to(self.device)
 
-        self.log("train_loss", loss, prog_bar=True)
+            output = self.model(input_idx, attention_mask)
 
-        return {
-            'loss': loss,
-            'pred': preds,
-            'label': batch['label']
-        }
+            loss = self.loss_fn(output.squeeze(), label.float())
+            loss.requires_grad_(True)
+            loss.backward()
 
-    def training_epoch_end(self, outputs, state='train'):
-        y_true = []
-        y_pred = []
-        for i in outputs:
-            y_true += i['label'].tolist()
-            y_pred += i['pred'].tolist()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_norm)  # gradient clipping
+            self.optimizer.step()
+            self.scheduler.step()
 
-        acc = accuracy_score(y_true, y_pred)
-        prec = precision_score(y_true, y_pred)
-        rec = recall_score(y_true, y_pred)
-        f1 = f1_score(y_true, y_pred)
+            train_acc += self.calc_acc(output, label.float())
 
-        # self.log(state+'_acc', acc, on_epoch=True, prog_bar=True)
-        # self.log(state+'_precision', prec, on_epoch=True, prog_bar=True)
-        # self.log(state+'_recall', rec, on_epoch=True, prog_bar=True)
-        # self.log(state+'_f1', f1, on_epoch=True, prog_bar=True)
-        print(f'[Epoch {self.trainer.current_epoch} {state.upper()}] Acc: {acc}, Prec: {prec}, Rec: {rec}, F1: {f1}')
+        print(
+            "train loop: loss {}  acc {}".format(loss.data.cpu().numpy(), train_acc / len(self.dset_train)))
 
-    def validation_step(self, batch, batch_idx):
-        '''
-        ##########################################################
-        electra forward input shape information
-        * input_ids.shape (batch_size, max_length)
-        * attention_mask.shape (batch_size, max_length)
-        ##########################################################
-        '''
-        output = self(input_ids=batch['input_ids'].to(device),
-                      attention_mask=batch['attention_mask'].to(device))
-        logits = output.logits
-        preds = nn.functional.softmax(logits, dim=1).argmax(dim=1)
+    def test_loop(self):
 
-        labels = batch['label']
-        accuracy = self.metric_acc(preds, labels)
-        f1 = self.metric_f1(preds, labels)
-        recall = self.metric_rec(preds, labels)
-        precision = self.metric_pre(preds, labels)
-        self.log('val_accuracy', accuracy, on_epoch=True, prog_bar=True)
-        self.log('val_f1', f1, on_epoch=True, prog_bar=True)
-        self.log('val_recall', recall, on_epoch=True, prog_bar=True)
-        self.log('val_precision', precision, on_epoch=True, prog_bar=True)
+        self.model.eval()
+        with torch.no_grad():
+            test_loss = 0.0
+            test_acc = 0.0
 
-        return {
-            'accuracy': accuracy,
-            'f1': f1,
-            'recall': recall,
-            'precision': precision
-        }
+            for batch_id, (_input_idx, _attention_mask, _label) in enumerate(tqdm(self.dset_test)):
+                input_idx = _input_idx.to(self.device)
+                attention_mask = _attention_mask.to(self.device)
+                label = _label.to(self.device)
 
-    def validation_epoch_end(self, outputs):
-        val_acc = torch.stack([i['accuracy'] for i in outputs]).mean()
-        val_f1 = torch.stack([i['f1'] for i in outputs]).mean()
-        val_rec = torch.stack([i['recall'] for i in outputs]).mean()
-        val_pre = torch.stack([i['precision'] for i in outputs]).mean()
-        # self.log('val_f1', val_f1, on_epoch=True, prog_bar=True)
-        # self.log('val_acc', val_acc, on_epoch=True, prog_bar=True)
-        print(f'val_accuracy : {val_acc}, val_f1 : {val_f1}, val_recall : {val_rec}, val_precision : {val_pre}')
+                output = self.model(input_idx, attention_mask)
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.electra.parameters(), lr=self.learning_rate)
-        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+                test_loss += self.loss_fn(output, label.float())
 
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': lr_scheduler
-        }
+                test_acc += self.calc_acc(output, label.float())
+
+            print(
+                "test loop: loss {}  acc {}".format( test_loss.data.cpu().numpy() / len(self.dset_test), test_acc / len(self.dset_test)))
+
+    def valid_loop(self):
+
+        self.model.eval()
+        with torch.no_grad():
+            valid_result = []
+
+            for batch_id, (_input_idx, _attention_mask) in enumerate(tqdm(self.dset_test)):
+                input_idx = _input_idx.to(self.device)
+                attention_mask = _attention_mask.to(self.device)
+
+                output = self.model(input_idx, attention_mask)
+
+                values, indices = torch.max(output)
+                valid_result.append(indices)
+                torch.cuda.empty_cache()
+
+            return valid_result

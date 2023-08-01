@@ -1,0 +1,31 @@
+{
+
+        "dir_name" : "C:/Users/Administrator/PycharmProjects/ELECTRA_Classification/",
+        "chk_point" : "src/models/chk_point.pt",
+        "train_file" : "data/ratings_train.txt",
+        "test_file" : "data/ratings_test.txt",
+        "valid_file" : "data/ratings_valid.txt",
+
+        "tokenizer_len" : 512,
+
+        "encoder" : "rnn",
+
+        "mode" : "train",
+
+        "input_size" : 256,
+        "hidden_size" : 256,
+        "num_layer" : 2,
+        "num_class" : 1,
+
+        "drop_rate_encoder" : 0.5,
+        "drop_rate_bert" : 0.5,
+
+        "batch_size" : 8,
+        "warmup_rate" : 1,
+        "epoch" : 20,
+        "grad_norm" : 1,
+        "learn_rate" : 1,
+
+        "max_length" : 512
+
+}
