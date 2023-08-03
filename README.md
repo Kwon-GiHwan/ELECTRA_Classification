@@ -46,17 +46,39 @@ def forward(self, input):
     return out_cls
 ```
 
-# Environment
+### 사용법
+config.json : 파일 내에서 다음과 같은 설정이 가능합니다.
+- dir_name : 프로젝트 디렉토리명
+- chk_point : 체크포인트 파일명
+- train_file : 학습용 데이터셋 파일명
+- test_file : 테스트 데이터셋 파일명
+- tokenizer_len : ELECTRA 토크나이저 토큰길이
+- max_length : ELECTRA 토크나이저 토큰길이
+- encoder : Fine Tuning Layer 설정(rnn, linear)
+- mode : 학습(train) 또는 검증/사용(vali) task 지정
+- input_size : Fine Tuning Layer 입력
+- hidden_size : Fine Tuning Layer hidden size
+- num_layer : Fine Tuning Layer 수(Bidirection)
+- num_class : Classification 할 Class 수
+- drop_rate_encoder : Fine Tuning Layer drop rate 설정
+- drop_rate_electra : ELECTRA drop rate 설정
+- batch_size : Batch Size 설정
+- warmup_rate : Optimizer Warmup Rate 설정
+- epoch : Epoch 설정
+- grad_norm : Grad_normalization 설정
+- learn_rate : Learning Rate 지정
+
+### Environment
 - Colab Python 3.10
 - GPU: V100 
 
-# 결과
+### 결과
 
 결과 비교를 위한 Test Dataset은 [Naver sentiment movie corpus](https://github.com/e9t/nsmc) 를 활용하였습니다.
 
 
 - 작성중
-
+테이블(F1 Score 비교하기)
 ## Reference
 - [KoELECTRA](https://github.com/monologg/KoELECTRA)
 - [Binary Classification](https://github.com/na2na8/ELECTRABinaryClassification)
