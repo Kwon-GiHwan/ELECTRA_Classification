@@ -17,8 +17,8 @@
         "num_layer" : 2,
         "num_class" : 1,
 
-        "drop_rate_encoder" : 0.5,
-        "drop_rate_bert" : 0.5,
+        "drop_rate_encoder" : 0.1,
+        "drop_rate_bert" : 0.1,
 
         "batch_size" : 8,
         "warmup_rate" : 1,
