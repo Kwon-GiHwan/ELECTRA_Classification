@@ -27,7 +27,6 @@ Fine-Tuning 레이어는 다음과 같은 구조로 적용되었으며 Electra �
 ## 결과
 
 결과 비교를 위한 Test Dataset은 [Naver sentiment movie corpus](https://github.com/e9t/nsmc) 를 활용하였습니다.
-
 - 작성중
 
 ## Reference
