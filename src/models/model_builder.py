@@ -75,7 +75,7 @@ class Classifier(nn.Module):
     def __init__(self, argument_train):
         super(Classifier, self).__init__()
 
-        self.electra = Electra(argument_train.drop_rate_bert)
+        self.electra = Electra(argument_train.drop_rate_electra)
 
         self.classifier = RNNClassifier(bidirectional=True, num_layers=argument_train.num_layer,
                                       input_size=argument_train.input_size, hidden_size=argument_train.hidden_size,
