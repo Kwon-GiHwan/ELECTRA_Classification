@@ -60,8 +60,8 @@ class RNNClassifier(nn.Module):
 
             self.active_function = nn.Softmax(dim = 0)
 
-    def forward(self, x):
-        output, _ = self.rnn(x)
+    def forward(self, input):
+        output, _ = self.rnn(input)
         out_fow = output[range(len(output)),  :self.hidden_size]
         out_rev = output[:, self.hidden_size:]
         output = torch.cat((out_fow, out_rev), 1)
